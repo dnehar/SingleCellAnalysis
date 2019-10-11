@@ -1,0 +1,245 @@
+Run_Seurat <- function(input, 
+                       output, 
+                       projectName,
+                       nPCA,
+                       nRes,
+                       dim.embed=3){
+  
+  #- Error messages ####  
+  if (!require(Seurat)) {
+    stop("Can't continue can't load ggplot2")
+  }
+  
+  if (!require(tidyr)) {
+    stop("Can't continue can't load ggplot2")
+  }
+  
+  if (!require(dplyr)) {
+    stop("Can't continue can't load ggplot2")
+  }
+  #-- number of arguments 
+  if (length(match.call()) <= 6) {
+    stop("Not enough arguments passed... requires 5 variables")
+  }
+  
+  # PARAMETERS ---- 
+  #setwd("/projects/nehard/SingleCell/Aging_IL7R/IL7R_HO/Aggregated/")
+  colors<-c('0'='#e41a1c','1'='#999999', '2'='#377eb8','3'='#4daf4a','4'='#984ea3','5'='#ff7f00',
+            '6'='#a65628','7'='#f781bf','8'='#7fcdbb','9'='#cab2d6', '10'="#060404", '11'="#bdbdbd", 
+            '12'="#addd8e", '13'="#dd1c77",'14'="#fed976",'15'= "#08519c",'16'="#7a0177")
+  
+  Markers <- c("HBB", "HBA1", "HBA2", "PF4", "PPBP","IRF7","LILRA4", "PLDE4","S100A9", 
+               "S100A8","LYZ","CST3", "FCER1G", "FCGR3A","IL7R","CD3E","CD3D","CD8A",
+               "CD8B", "CCL5",  "IGLL5", "MZB1", "IGJ", "MS4A1", "CD79A","KLRB1","GNLY", "PRF1","GZMH", "NKG7")
+  
+  
+  # INPUT/OUTPUT -----
+
+  l <- list.files(input)
+  
+  
+  #output = ("./output/")
+  Name <- projectName
+  
+  for (i in 1: length(l)) {
+    RawData <- Read10X(file.path(input, l[i]))
+    pbmc <- CreateSeuratObject(raw.data = RawData, 
+                               min.cells = 3, 
+                               min.genes = 200,
+                               project = projectName) #***
+    
+    #-- Data processing 
+    
+    #- NORMALIZATION; SCALING---- 
+    pbmc <- NormalizeData(object = pbmc, 
+                          normalization.method = "LogNormalize", 
+                          scale.factor = 10000)
+    
+    
+    pbmc <- FindVariableGenes(object = pbmc, 
+                              mean.function = ExpMean, 
+                              dispersion.function = LogVMR, 
+                              do.plot = FALSE)
+    hv.genes <- head(rownames(pbmc@hvg.info), 1000)
+    
+    
+    
+    
+    mito.genes <- grep(pattern = "^mt-", x = rownames(x = pbmc@data), value = TRUE)
+    percent.mito <- Matrix::colSums(pbmc@raw.data[mito.genes, ])/Matrix::colSums(pbmc@raw.data)
+    pbmc <- AddMetaData(object = pbmc, metadata = percent.mito, col.name = "percent.mito")
+    pbmc <- ScaleData(object = pbmc, 
+                      genes.use = hv.genes, 
+                      display.progress = FALSE, 
+                      vars.to.regress = "percent.mito") 
+    #do.par = TRUE)#num.cores = 4
+    
+    
+    #- RUN PCA -----
+    pbmc <- RunPCA(object = pbmc, 
+                   pc.genes = hv.genes, 
+                   pcs.compute = 100, 
+                   do.print = TRUE, 
+                   pcs.print = 1:5, 
+                   genes.print = 5)
+    
+    
+    
+    #- plot the components 
+    pdf(file=file.path(output, paste0("PCElbowPlot_", l[i],"_", Name, ".pdf")))
+    p <- PCElbowPlot(object = pbmc, num.pc = 100)
+    print(p)
+    dev.off()
+    
+    
+    pbmc <- ProjectPCA(object = pbmc, do.print = FALSE)
+    
+    
+    #-- plot PC heatmap  
+    
+    pdf(file=file.path(output, paste0("PCHeatmap2_", l[i],"_", Name, ".pdf")))
+    PCHeatmap(pbmc, 
+              pc.use = c(1:3, 70:75), 
+              cells.use = 500, 
+              do.balanced = TRUE)
+    
+    dev.off()
+    
+    # save(pbmc, file=file.path(output, paste0(l[i],"_", Name, "_1.rds"))) #*****
+    
+    
+    # Graph-based clustering : FIND CLUSTERS ----
+    options(scipen=10) #***
+    pbmc <- FindClusters(object = pbmc, 
+                         reduction.type = "pca", 
+                         dims.use = nPCA, #*** 
+                         resolution = nRes, #***
+                         print.output =0, 
+                         save.SNN = TRUE)
+    
+    #- save param 
+    PrintFindClustersParams(object = pbmc)
+    
+
+
+
+
+        #------------------------------  RUN  tSNE
+
+    pbmc <- RunTSNE(object = pbmc,
+                    dims.use = nPCA,  #**
+                    do.fast = TRUE,
+                    dim.embed = dim.embed) #-- For 3 dim: dim.embed = 3
+
+
+    #--- save the .rds object
+    save(pbmc, file=file.path(output, paste0(l[i],"_", Name, ".rds"))) #*****
+
+
+
+  #-- plot TSNE PLOT
+    pdf(file=file.path(output, paste0("TsnePlot_", l[i],"_", Name, ".pdf")))
+    TSNEPlot(pbmc,
+             #colors.use = colors,
+             pt.size = 0.5)
+    dev.off()
+
+    
+
+  #------------------------------------------- Expression plots 
+    
+    genes <- intersect(Markers ,rownames(pbmc@data))
+    
+    #-- DotPlot 
+    pdf(file=file.path(output, paste0("DP_", l[i],"_", Name, ".pdf")))
+    p1 <- DotPlot(pbmc,
+                  genes, 
+                  dot.scale = 8 , 
+                  col.min = -2.5,
+                  col.max = 2, 
+                  cols.use =c("#e0e0e0", "#ff7f00"),
+                  x.lab.rot=90, 
+                  plot.legend = T,
+                  dot.min=0.2, 
+                  do.return = TRUE)
+    print(p1)
+    dev.off()   
+    
+    
+    
+    # --------------------------------------------- markers DEGs ----
+
+
+    pbmc.markers <- FindAllMarkers(object = pbmc, 
+                                   only.pos = TRUE, 
+                                   min.pct = 0.01, #***
+                                   thresh.use = 0.01)
+    pbmc.markers$FC <- 2^(pbmc.markers$avg_logFC)
+    #Save top 50
+    Top50 <-  pbmc.markers %>% group_by(cluster) %>% top_n(50, avg_logFC)
+    
+    write.csv(file = file.path(output, paste0("Top50_",l[i],"_", Name, ".csv")), Top50)
+    
+    
+    #--- DOHeatMap all
+    Top20 <-  pbmc.markers %>% group_by(cluster) %>% top_n(20, avg_logFC)
+    DE20 <- as.character(Top20$gene)
+    
+    png(file=file.path(output, paste0("DoHM_Top20_", l[i],"_", Name, ".png")), width=1800, height=1400)
+    p<- DoHeatmap(
+      object = pbmc,
+      genes.use = DE20,
+      slim.col.label = TRUE,
+      remove.key = TRUE,
+      draw.line = T,
+      group.label.rot = T)
+    print(p)
+    dev.off() 
+    
+#--------------------------------------------- Run umap
+
+
+pbmc <- RunUMAP(object = pbmc,
+                reduction.use = "pca",
+                dims.use = 1:25,
+                min_dist = 0.75,
+                max.dim=3L)
+
+
+#-- save dataset
+
+    save(pbmc, file=file.path(output, paste0(l[i],"_", Name, ".rds"))) #*****
+
+ #-------- save plot: Umap
+
+pdf(file=file.path(output, paste0("UMAP_", l[i],"_", Name, ".pdf")))
+p2 <- DimPlot(object = pbmc,
+              reduction.use = "umap",
+              no.legend = F,
+              do.return = TRUE,
+              do.label = T,
+              pt.size = 0.1,
+             colors.use = col_ids) +
+  ggtitle("UMAP") +
+  theme(plot.title = element_text(hjust = 0.5))
+print(p2)
+dev.off()
+
+
+
+#----------------------------- Save Meta data
+
+#- meta data
+MetaData <- pbmc@meta.data #meta
+
+#- t-SNE
+tSNE <- data.frame(pbmc@dr$tSNE@cell.embeddings)
+UMAP <- data.frame(pbmc@dr$umap@cell.embeddings)
+
+TsneData1 <- data.frame(merge(tSNE, MetaData, by=0), row.names = 1)
+TsneData <- data.frame(merge(TsneData1, UMAP, by=0), row.names = 1)
+
+save(file = file.path(output, paste0("MetaData_",l[i],"_", Name, ".rds")), TsneData)
+
+}
+}
